@@ -1,24 +1,15 @@
 package com.dungtienta.www.fakelocationultra.map
 
-import android.annotation.SuppressLint
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
-import android.location.LocationManager
 import android.os.Bundle
-import android.os.SystemClock
-import android.provider.Settings
 import android.support.v4.app.ActivityCompat
 import android.support.v4.content.ContextCompat
-import android.support.v7.app.AppCompatActivity
 import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
 import com.dungtienta.www.fakelocationultra.R
-import com.dungtienta.www.fakelocationultra.injection.component.DaggerMapsComponent
-import com.dungtienta.www.fakelocationultra.injection.module.ContextModule
-import com.google.android.gms.location.FusedLocationProviderClient
-import com.google.android.gms.location.places.PlaceDetectionClient
+import com.dungtienta.www.fakelocationultra.base.BaseActivity
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
@@ -27,27 +18,23 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
-import javax.inject.Inject
+import com.google.android.gms.tasks.Task
 
-class MapsActivity : AppCompatActivity(), OnMapReadyCallback
+class MapsActivity : BaseActivity(), MapsView, OnMapReadyCallback
 {
     companion object
     {
         val TAG = MapsActivity::class.simpleName
     }
 
-    @Inject lateinit var mPlaceDetectionClient: PlaceDetectionClient
-
-    @Inject lateinit var mFusedLocationProviderClient: FusedLocationProviderClient
-
-    @Inject lateinit var mLocationManager: LocationManager
+    private lateinit var presenter: MapsPresenter
 
     private var mMap: GoogleMap? = null
     private var currentMarker: Marker? = null
     private var mCameraPosition: CameraPosition? = null
 
     // Default location to the happiest place on earth.
-    private val mDefaultLocation = LatLng(33.8121, 117.9190)
+    private val mDefaultLocation = LatLng(33.8121, -117.9190)
     private var mLastKnownLocation: Location? = null
 
     // Keys for storing activity state.
@@ -61,12 +48,6 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
     override fun onCreate(savedInstanceState: Bundle?)
     {
         super.onCreate(savedInstanceState)
-
-        // Activity scope injection
-        DaggerMapsComponent.builder()
-                .contextModule(ContextModule(this))
-                .build()
-                .inject(this)
 
         // Retrieve location and camera position from saved instance state
         if (savedInstanceState != null)
@@ -82,6 +63,8 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
                 .findFragmentById(R.id.map) as SupportMapFragment
 
         mapFragment.getMapAsync(this)
+
+        presenter = MapsPresenter(this)
     }
 
     /**
@@ -95,6 +78,12 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
             outState.putParcelable(KEY_LOCATION, mLastKnownLocation)
             super.onSaveInstanceState(outState)
         }
+    }
+
+    override fun onResume()
+    {
+        super.onResume()
+        updateLocationUI()
     }
 
     /**
@@ -119,7 +108,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
     {
         when (item.itemId) {
 
-            R.id.menu_developer_options -> startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+            R.id.menu_developer_options -> goToDeveloperSettings()
             R.id.menu_location_history -> throw IllegalStateException("Need to implement location history")
         }
         return true
@@ -141,53 +130,47 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
         // Add a marker in Sydney and move the camera
         mMap?.setOnMapClickListener { latLng: LatLng? ->
             Log.d("poop", "Map clickd");
-            getMockLocation(latLng?.latitude, latLng?.longitude)
-            addMarker(latLng)
+            if (latLng != null)
+            {
+                presenter.setMockLocation(latLng)
+            }
         }
 
         // Prompt the user for permission
         getLocationPermission()
-
-        // Move the camera to the device's current location
-        getDeviceLocation()
     }
 
     private fun getDeviceLocation()
     {
-        try
+        if (mLocationPermissionGranted)
         {
-            if (mLocationPermissionGranted)
-            {
-                val locationResult = mFusedLocationProviderClient.lastLocation
-                locationResult.addOnCompleteListener(this) { task ->
-                    if (task.isSuccessful && mLastKnownLocation != null)
-                    {
-                        // Set the map's camera position to the current location of the device.
-                        mLastKnownLocation = task.result
-                        mMap?.moveCamera(CameraUpdateFactory.newLatLngZoom(
-                                LatLng(mLastKnownLocation!!.latitude,
-                                        mLastKnownLocation!!.longitude), DEFAULT_ZOOM.toFloat()))
-                    }
-                    else
-                    {
-                        Log.d(TAG, "Current location is null. Using defaults.")
-                        Log.e(TAG, "Exception: " + task.exception?.message)
-                        mMap?.moveCamera(CameraUpdateFactory
-                                .newLatLngZoom(mDefaultLocation, DEFAULT_ZOOM.toFloat()))
-                        mMap?.uiSettings?.isMyLocationButtonEnabled = false
-                    }
-                }
-                mFusedLocationProviderClient.setMockMode(true);
-            }
+            presenter.getDeviceLocation()
         }
-        catch (e: SecurityException)
-        {
-            Log.e("Exception: %s", e.message)
-        }
-
     }
 
-    private fun addMarker(latLng: LatLng?)
+    override fun moveCameraToDefaultLocation(locationResult: Task<Location>)
+    {
+        locationResult.addOnCompleteListener(this) { task ->
+            if (task.isSuccessful)
+            {
+                // Set the map's camera position to the current location of the device.
+                mLastKnownLocation = task.result
+                mMap?.moveCamera(CameraUpdateFactory.newLatLngZoom(
+                        LatLng(mLastKnownLocation!!.latitude,
+                                mLastKnownLocation!!.longitude), DEFAULT_ZOOM.toFloat()))
+            }
+            else
+            {
+                Log.d(MapsActivity.TAG, "Current location is null. Using defaults.")
+                Log.e(MapsActivity.TAG, "Exception: " + task.exception?.message)
+                mMap?.moveCamera(CameraUpdateFactory
+                        .newLatLngZoom(mDefaultLocation, DEFAULT_ZOOM.toFloat()))
+                mMap?.uiSettings?.isMyLocationButtonEnabled = false
+            }
+        }
+    }
+
+    override fun addMarker(latLng: LatLng)
     {
         currentMarker?.remove()
 
@@ -208,7 +191,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
             mMap?.addMarker(MarkerOptions()
                     .title("Default shit location.")
                     .position(mDefaultLocation)
-                    .snippet("Yadifuckingyahhhh"))
+                    .snippet("Stuff"))
 
             // Prompt the user for permission.
             getLocationPermission()
@@ -221,7 +204,6 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>,
                                             grantResults: IntArray)
     {
-        mLocationPermissionGranted = false
         when (requestCode)
         {
             PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION ->
@@ -230,10 +212,11 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
                 if (grantResults.size > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED)
                 {
                     mLocationPermissionGranted = true
+                    updateLocationUI()
                 }
             }
         }
-        updateLocationUI()
+        getDeviceLocation()
     }
 
     private fun getLocationPermission()
@@ -248,6 +231,7 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
         {
             mLocationPermissionGranted = true
             updateLocationUI()
+            getDeviceLocation()
         }
         else
         {
@@ -274,7 +258,6 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
                 mMap?.isMyLocationEnabled = false
                 mMap?.uiSettings?.isMyLocationButtonEnabled = false
                 mLastKnownLocation = null
-                getLocationPermission()
             }
         }
         catch (e: SecurityException)
@@ -283,29 +266,14 @@ class MapsActivity : AppCompatActivity(), OnMapReadyCallback
         }
     }
 
-    @SuppressLint("MissingPermission", "ObsoleteSdkInt")
-    private fun getMockLocation(lat: Double?, long: Double?)
+    override fun moveCamera()
     {
-        if (lat == null || long == null)
-            return
-        val PROVIDER_NAME = "poop"
+        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+    }
 
-        val newLocation = Location(PROVIDER_NAME)
-
-        newLocation.latitude = lat
-        newLocation.longitude = long
-        newLocation.time = System.currentTimeMillis()
-
-        newLocation.accuracy = 6.toFloat()
-        newLocation.elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos();
-
-//        mLocationManager.setTestProviderEnabled(PROVIDER_NAME, true)
-//        mLocationManager.setTestProviderStatus(PROVIDER_NAME, LocationProvider.AVAILABLE,
-//                null, System.currentTimeMillis())
-//        mLocationManager.setTestProviderLocation(PROVIDER_NAME, newLocation)
-//            LocationServices.getFusedLocationProviderClient(this).setMockLocation(newLocation)
-        mFusedLocationProviderClient.setMockLocation(newLocation).addOnCompleteListener {
-            Log.d("poop", "Fuse location update complete")
-        }
+    override fun showEnableMockLocationError()
+    {
+        //TODO: Preferably show a dialog explaining why you're sending the user to developer settings
+        goToDeveloperSettings()
     }
 }

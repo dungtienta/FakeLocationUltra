@@ -14,3 +14,8 @@ annotation class ApplicationScope
 @Scope
 @Retention(AnnotationRetention.RUNTIME)
 annotation class ActivityScope
+
+@MustBeDocumented
+@Scope
+@Retention(AnnotationRetention.RUNTIME)
+annotation class MapScope
